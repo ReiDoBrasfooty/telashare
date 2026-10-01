@@ -25,7 +25,8 @@
 
   #sala { flex:1; display:flex; min-height:0; }
   #principal { flex:1; display:flex; flex-direction:column; min-width:0; }
-  #topo { display:flex; gap:8px; align-items:center; padding:10px; background:var(--painel); flex-wrap:wrap; }
+  /* Barra de ações fica embaixo, centralizada (estilo Discord) */
+  #topo { display:flex; gap:8px; align-items:center; justify-content:center; padding:10px; background:var(--painel); flex-wrap:wrap; border-top:1px solid #111; }
   #codigo { font-family:monospace; background:var(--campo); padding:8px 10px; border-radius:6px; }
 
   #palco { flex:1; position:relative; background:#000; min-height:0; overflow:auto; }
@@ -38,7 +39,11 @@
   .tela video { width:100%; height:100%; object-fit:contain; display:block; }
   .tela .rotulo { position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,.65); padding:3px 8px; border-radius:4px; font-size:13px; }
   .tela .estado { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:16px; color:var(--fraco); pointer-events:none; }
-  .tela .som { position:absolute; right:8px; bottom:8px; padding:5px 10px; font-size:13px; }
+  .tela .controle { position:absolute; right:8px; bottom:8px; display:flex; align-items:center; gap:6px; background:rgba(0,0,0,.65); padding:4px 8px; border-radius:6px; cursor:default; }
+  .tela .controle button { background:transparent; padding:2px 4px; font-size:18px; line-height:1; }
+  .tela .controle input { width:100px; accent-color:var(--azul); cursor:pointer; }
+  .tela .controle .dica { font-size:13px; }
+  .tela .controle.alerta { outline:2px solid var(--verde); }
   #aviso { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--fraco); text-align:center; padding:16px; pointer-events:none; }
 
   #lateral { width:280px; background:var(--painel); display:flex; flex-direction:column; border-left:1px solid #111; }
@@ -49,7 +54,11 @@
   #mensagens p { margin:6px 0; word-wrap:break-word; } #mensagens b { color:#fff; }
   #formChat { display:flex; gap:6px; padding:12px; } #formChat input { flex:1; min-width:0; }
 
-  @media (max-width: 700px) { #sala { flex-direction:column; } #lateral { width:auto; height:40vh; } }
+  @media (max-width: 700px) {
+    #sala { flex-direction:column; } #lateral { width:auto; height:40vh; }
+    /* No celular: vídeo, depois chat, e a barra de ações bem no fim da tela */
+    #principal { display:contents; } #palco { order:1; } #lateral { order:2; } #topo { order:3; }
+  }
 </style>
 </head>
 <body>
@@ -68,17 +77,18 @@
 
 <div id="sala" class="escondido">
   <div id="principal">
+    <div id="palco">
+      <div id="grade"></div>
+      <div id="aviso">Ninguém está compartilhando a tela ainda.<br>Clique em “Compartilhar tela” para começar.</div>
+    </div>
     <div id="topo">
       <span>Sala: <span id="codigo"></span></span>
       <button id="btnCopiar" class="cinza">Copiar link</button>
       <button id="btnCompartilhar" class="verde">Compartilhar tela</button>
       <button id="btnParar" class="vermelho escondido">Parar de compartilhar</button>
       <button id="btnTelaCheia" class="cinza">Tela cheia</button>
+      <button id="btnChat" class="cinza">Esconder chat</button>
       <button id="btnSair" class="vermelho">Sair</button>
-    </div>
-    <div id="palco">
-      <div id="grade"></div>
-      <div id="aviso">Ninguém está compartilhando a tela ainda.<br>Clique em “Compartilhar tela” para começar.</div>
     </div>
   </div>
   <div id="lateral">
@@ -163,7 +173,29 @@ function addMensagem(nome, texto, sistema) {
   else { const b = document.createElement('b'); b.textContent = nome + ': '; p.append(b, texto); }
   $('mensagens').append(p);
   $('mensagens').scrollTop = 1e9;
+  if (!sistema && chatEscondido) { naoLidas++; atualizarBotaoChat(); }
 }
+
+// ================= ESCONDER / MOSTRAR CHAT =================
+let chatEscondido = false, naoLidas = 0;
+try { chatEscondido = localStorage.getItem('telashare-chat-escondido') === '1'; } catch {}
+
+function atualizarBotaoChat() {
+  $('lateral').classList.toggle('escondido', chatEscondido);
+  $('btnChat').textContent = chatEscondido
+    ? 'Mostrar chat' + (naoLidas ? ' (' + naoLidas + ')' : '')
+    : 'Esconder chat';
+  $('btnChat').classList.toggle('verde', chatEscondido && naoLidas > 0); // destaca quando tem mensagem nova
+}
+
+$('btnChat').onclick = () => {
+  chatEscondido = !chatEscondido;
+  if (!chatEscondido) naoLidas = 0;
+  try { localStorage.setItem('telashare-chat-escondido', chatEscondido ? '1' : '0'); } catch {}
+  atualizarBotaoChat();
+  if (!chatEscondido) $('mensagens').scrollTop = 1e9;
+};
+atualizarBotaoChat();
 
 function nomeDe(id) { return participantes.find(p => p.id === id)?.nome || 'Alguém'; }
 
@@ -177,6 +209,12 @@ function mostrarUsuarios() {
 }
 
 // ================= QUADRINHOS DE VÍDEO =================
+// Lembra o último volume escolhido (0 a 100)
+function lerVolume() {
+  try { const v = localStorage.getItem('telashare-volume'); return v === null ? 100 : Number(v); } catch { return 100; }
+}
+function salvarVolume(v) { try { localStorage.setItem('telashare-volume', v); } catch {} }
+
 function criarTela(id, nome, local) {
   if (telas.has(id)) return telas.get(id);
   const el = document.createElement('div');
@@ -187,16 +225,50 @@ function criarTela(id, nome, local) {
   rotulo.className = 'rotulo'; rotulo.textContent = local ? 'Você' : nome;
   const estado = document.createElement('div');
   estado.className = 'estado';
-  const som = document.createElement('button');
-  som.className = 'som escondido'; som.textContent = '🔊 Ativar som';
-  el.append(video, rotulo, estado, som);
+  el.append(video, rotulo, estado);
 
   const t = { el, video, call: null, local,
-    estado: txt => estado.textContent = txt };
+    estado: txt => estado.textContent = txt,
+    mostrarBotaoSom: () => {} };
   video.addEventListener('playing', () => t.estado(''));
-  som.onclick = e => { e.stopPropagation(); video.muted = false; video.play(); som.classList.add('escondido'); };
   el.onclick = () => { if (video.paused) tocar(t); focar(id); };
-  t.mostrarBotaoSom = () => som.classList.remove('escondido');
+
+  // Controle de volume (só nas telas dos outros; a sua fica sempre muda para não dar eco)
+  if (!local) {
+    const controle = document.createElement('div');
+    controle.className = 'controle';
+    controle.onclick = e => e.stopPropagation(); // não amplia a tela ao mexer no volume
+    const mudo = document.createElement('button');
+    mudo.title = 'Silenciar / ativar som';
+    const dica = document.createElement('span');
+    dica.className = 'dica escondido'; dica.textContent = 'Ativar som';
+    const volume = document.createElement('input');
+    volume.type = 'range'; volume.min = 0; volume.max = 100; volume.title = 'Volume';
+    volume.value = lerVolume();
+    video.volume = volume.value / 100;
+    controle.append(mudo, dica, volume);
+    el.append(controle);
+
+    const atualizarIcone = () => {
+      const silencioso = video.muted || video.volume === 0;
+      mudo.textContent = silencioso ? '🔇' : video.volume < 0.5 ? '🔉' : '🔊';
+      if (!video.muted) { controle.classList.remove('alerta'); dica.classList.add('escondido'); }
+    };
+    volume.oninput = () => {
+      video.volume = volume.value / 100;
+      if (video.muted && volume.value > 0) { video.muted = false; video.play(); }
+      salvarVolume(volume.value);
+    };
+    mudo.onclick = () => {
+      video.muted = !video.muted;
+      if (!video.muted && video.volume === 0) { video.volume = 0.5; volume.value = 50; }
+      video.play();
+    };
+    video.addEventListener('volumechange', atualizarIcone);
+    atualizarIcone();
+    // Chamado quando o navegador bloqueia o som automático
+    t.mostrarBotaoSom = () => { controle.classList.add('alerta'); dica.classList.remove('escondido'); };
+  }
 
   telas.set(id, t);
   $('grade').append(el);
