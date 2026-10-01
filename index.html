@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TelaShare</title>
+<!-- Usa a cópia local; se não existir, tenta os CDNs -->
+<script src="peerjs.min.js"></script>
+<script>window.Peer || document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
+<script>window.Peer || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"><\/script>')</script>
+<style>
+  :root { --bg:#1e1f22; --painel:#2b2d31; --campo:#383a40; --texto:#dbdee1; --fraco:#949ba4; --azul:#5865f2; --verde:#23a55a; --vermelho:#da373c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--texto); height:100vh; display:flex; flex-direction:column; }
+  button { background:var(--azul); color:#fff; border:0; border-radius:6px; padding:10px 16px; font-size:15px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); } button:disabled { opacity:.5; cursor:default; }
+  button.verde { background:var(--verde); } button.vermelho { background:var(--vermelho); } button.cinza { background:var(--campo); }
+  input { background:var(--campo); color:var(--texto); border:0; border-radius:6px; padding:10px; font-size:15px; }
+  .escondido { display:none !important; }
+
+  #entrada { margin:auto; background:var(--painel); padding:32px; border-radius:12px; width:min(420px, calc(100% - 32px)); display:flex; flex-direction:column; gap:12px; }
+  #entrada h1 { margin:0 0 8px; }
+  .linha { display:flex; gap:8px; } .linha input { flex:1; min-width:0; }
+  .ou { text-align:center; color:var(--fraco); font-size:13px; }
+
+  #sala { flex:1; display:flex; min-height:0; }
+  #principal { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #topo { display:flex; gap:8px; align-items:center; padding:10px; background:var(--painel); flex-wrap:wrap; }
+  #codigo { font-family:monospace; background:var(--campo); padding:8px 10px; border-radius:6px; }
+
+  #palco { flex:1; position:relative; background:#000; min-height:0; overflow:auto; }
+  #grade { display:grid; gap:8px; padding:8px; min-height:100%; align-content:center;
+           grid-template-columns:repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+  #grade.focado { height:100%; grid-template-columns:1fr; grid-template-rows:1fr; }
+  #grade.focado .tela:not(.foco) { display:none; }
+  #grade.focado .tela.foco { aspect-ratio:auto; }
+  .tela { position:relative; background:#111; border-radius:8px; overflow:hidden; aspect-ratio:16/9; cursor:pointer; }
+  .tela video { width:100%; height:100%; object-fit:contain; display:block; }
+  .tela .rotulo { position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,.65); padding:3px 8px; border-radius:4px; font-size:13px; }
+  .tela .estado { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:16px; color:var(--fraco); pointer-events:none; }
+  .tela .som { position:absolute; right:8px; bottom:8px; padding:5px 10px; font-size:13px; }
+  #aviso { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--fraco); text-align:center; padding:16px; pointer-events:none; }
+
+  #lateral { width:280px; background:var(--painel); display:flex; flex-direction:column; border-left:1px solid #111; }
+  #lateral h3 { margin:12px; font-size:12px; text-transform:uppercase; color:var(--fraco); }
+  #usuarios { list-style:none; margin:0 12px; padding:0; }
+  #usuarios li { padding:4px 0; }
+  #mensagens { flex:1; overflow-y:auto; padding:0 12px; font-size:14px; }
+  #mensagens p { margin:6px 0; word-wrap:break-word; } #mensagens b { color:#fff; }
+  #formChat { display:flex; gap:6px; padding:12px; } #formChat input { flex:1; min-width:0; }
+
+  @media (max-width: 700px) { #sala { flex-direction:column; } #lateral { width:auto; height:40vh; } }
+</style>
+</head>
+<body>
+
+<div id="entrada">
+  <h1>📺 TelaShare</h1>
+  <input id="nome" placeholder="Seu apelido" maxlength="20">
+  <button id="btnCriar" class="verde">Criar sala</button>
+  <div class="ou">— ou entrar numa sala —</div>
+  <div class="linha">
+    <input id="codigoEntrar" placeholder="Código ou link da sala">
+    <button id="btnEntrar">Entrar</button>
+  </div>
+  <div id="erroEntrada" style="color:#f88"></div>
+</div>
+
+<div id="sala" class="escondido">
+  <div id="principal">
+    <div id="topo">
+      <span>Sala: <span id="codigo"></span></span>
+      <button id="btnCopiar" class="cinza">Copiar link</button>
+      <button id="btnCompartilhar" class="verde">Compartilhar tela</button>
+      <button id="btnParar" class="vermelho escondido">Parar de compartilhar</button>
+      <button id="btnTelaCheia" class="cinza">Tela cheia</button>
+      <button id="btnSair" class="vermelho">Sair</button>
+    </div>
+    <div id="palco">
+      <div id="grade"></div>
+      <div id="aviso">Ninguém está compartilhando a tela ainda.<br>Clique em “Compartilhar tela” para começar.</div>
+    </div>
+  </div>
+  <div id="lateral">
+    <h3>Na sala</h3>
+    <ul id="usuarios"></ul>
+    <h3>Chat</h3>
+    <div id="mensagens"></div>
+    <form id="formChat"><input id="textoChat" placeholder="Mensagem..." autocomplete="off"><button>Enviar</button></form>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+if (!window.Peer) {
+  document.body.innerHTML = '<p style="margin:auto;padding:16px;text-align:center">Não foi possível carregar a biblioteca PeerJS.<br>' +
+    'Verifique se o arquivo <b>peerjs.min.js</b> está na mesma pasta do index.html, ou desative o bloqueador de anúncios.</p>';
+  throw new Error('PeerJS não carregou');
+}
+const PREFIXO = 'telashare-sala-';
+
+// Servidores que ajudam os aparelhos a se acharem pela internet.
+// STUN: descobre o endereço público (grátis). TURN: retransmite o vídeo quando a
+// conexão direta falha (ex.: celular no 4G + PC no Wi-Fi).
+// Os TURN que vinham no PeerJS saíram do ar, por isso configuramos aqui.
+// Para algo mais confiável, crie uma conta grátis em https://www.metered.ca/stun-turn
+// e troque o username/credential abaixo pelos seus.
+const SERVIDORES_ICE = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp'
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
+];
+const OPCOES_PEER = { config: { iceServers: SERVIDORES_ICE } };
+
+// Como funciona:
+// - O dono da sala é o "centro": todo mundo se conecta a ele para chat e lista de pessoas.
+// - O vídeo vai direto de quem compartilha para cada pessoa da sala (qualquer um pode compartilhar).
+let peer, meuNome, souDono = false;
+let connDono = null;                 // convidado: conexão com o dono
+const conexoes = new Map();          // dono: peerId -> { conn, nome }
+let participantes = [];              // [{ id, nome }] de todos na sala
+let minhaTela = null;                // minha transmissão (se estiver compartilhando)
+const minhasChamadas = new Map();    // peerId -> chamada enviando minha tela
+const telas = new Map();             // peerId -> quadrinho de vídeo na tela
+let focoAtual = null;
+
+// Abre direto na sala se veio por link (?sala=CODIGO)
+const salaDoLink = new URLSearchParams(location.search).get('sala');
+if (salaDoLink) $('codigoEntrar').value = salaDoLink;
+try { $('nome').value = localStorage.getItem('telashare-nome') || ''; } catch {}
+
+const podeCompartilhar = !!navigator.mediaDevices?.getDisplayMedia;
+
+function pegarNome() {
+  const n = $('nome').value.trim();
+  if (!n) { $('erroEntrada').textContent = 'Digite um apelido.'; return null; }
+  try { localStorage.setItem('telashare-nome', n); } catch {}
+  return n;
+}
+
+function abrirSala(codigo) {
+  $('entrada').classList.add('escondido');
+  $('sala').classList.remove('escondido');
+  $('codigo').textContent = codigo;
+  history.replaceState(null, '', '?sala=' + codigo);
+  if (!podeCompartilhar) {
+    $('btnCompartilhar').classList.add('escondido');
+    addMensagem('', 'Este navegador não permite compartilhar a tela (celulares não suportam). Você ainda pode assistir.', true);
+  }
+}
+
+function addMensagem(nome, texto, sistema) {
+  const p = document.createElement('p');
+  if (sistema) { p.style.color = 'var(--fraco)'; p.textContent = texto; }
+  else { const b = document.createElement('b'); b.textContent = nome + ': '; p.append(b, texto); }
+  $('mensagens').append(p);
+  $('mensagens').scrollTop = 1e9;
+}
+
+function nomeDe(id) { return participantes.find(p => p.id === id)?.nome || 'Alguém'; }
+
+function mostrarUsuarios() {
+  $('usuarios').innerHTML = '';
+  participantes.forEach(p => {
+    const li = document.createElement('li');
+    li.textContent = (telas.has(p.id) ? '🖥️ ' : '🟢 ') + p.nome + (p.id === peer.id ? ' (você)' : '');
+    $('usuarios').append(li);
+  });
+}
+
+// ================= QUADRINHOS DE VÍDEO =================
+function criarTela(id, nome, local) {
+  if (telas.has(id)) return telas.get(id);
+  const el = document.createElement('div');
+  el.className = 'tela';
+  const video = document.createElement('video');
+  video.autoplay = true; video.playsInline = true; video.muted = true;
+  const rotulo = document.createElement('span');
+  rotulo.className = 'rotulo'; rotulo.textContent = local ? 'Você' : nome;
+  const estado = document.createElement('div');
+  estado.className = 'estado';
+  const som = document.createElement('button');
+  som.className = 'som escondido'; som.textContent = '🔊 Ativar som';
+  el.append(video, rotulo, estado, som);
+
+  const t = { el, video, call: null, local,
+    estado: txt => estado.textContent = txt };
+  video.addEventListener('playing', () => t.estado(''));
+  som.onclick = e => { e.stopPropagation(); video.muted = false; video.play(); som.classList.add('escondido'); };
+  el.onclick = () => { if (video.paused) tocar(t); focar(id); };
+  t.mostrarBotaoSom = () => som.classList.remove('escondido');
+
+  telas.set(id, t);
+  $('grade').append(el);
+  atualizarAviso();
+  return t;
+}
+
+// Navegadores bloqueiam vídeo com som tocando sozinho. Se bloquear, toca mudo e mostra o botão de som.
+function tocar(t) {
+  t.video.muted = t.local;
+  t.video.play().catch(() => {
+    t.video.muted = true;
+    t.video.play().catch(() => t.estado('▶ Clique aqui para assistir'));
+    if (!t.local) t.mostrarBotaoSom();
+  });
+}
+
+function removerTela(id) {
+  const t = telas.get(id);
+  if (!t) return;
+  if (t.call) { const c = t.call; t.call = null; c.close(); }
+  t.el.remove();
+  telas.delete(id);
+  if (focoAtual === id) focar(id);
+  atualizarAviso();
+}
+
+function focar(id) {
+  focoAtual = focoAtual === id ? null : id;
+  $('grade').classList.toggle('focado', !!focoAtual);
+  telas.forEach((t, tid) => t.el.classList.toggle('foco', tid === focoAtual));
+}
+
+function atualizarAviso() {
+  $('aviso').classList.toggle('escondido', telas.size > 0);
+  if (peer) mostrarUsuarios();
+}
+
+// Alguém começou a me mandar a tela dele
+function receberChamada(call) {
+  call.answer();
+  const t = criarTela(call.peer, call.metadata?.nome || nomeDe(call.peer), false);
+  if (t.call && t.call !== call) t.call.close();
+  t.call = call;
+  t.estado('Conectando vídeo...');
+  call.on('stream', s => {
+    if (t.video.srcObject !== s) { t.video.srcObject = s; tocar(t); }
+  });
+  call.on('close', () => { if (t.call === call) removerTela(call.peer); });
+  const pc = call.peerConnection;
+  pc?.addEventListener('iceconnectionstatechange', () => {
+    if (pc.iceConnectionState === 'failed') t.estado('A conexão de vídeo falhou (rede/firewall). Peça para a pessoa compartilhar de novo.');
+  });
+}
+
+// ================= COMPARTILHAR MINHA TELA =================
+function ligarPara(id) {
+  if (!minhaTela) return;
+  minhasChamadas.get(id)?.close();
+  const call = peer.call(id, minhaTela, { metadata: { nome: meuNome } });
+  if (!call) return;
+  minhasChamadas.set(id, call);
+  call.on('close', () => { if (minhasChamadas.get(id) === call) minhasChamadas.delete(id); });
+}
+
+// Liga para quem entrou e desliga de quem saiu
+function sincronizarChamadas() {
+  const ids = new Set(participantes.map(p => p.id));
+  if (minhaTela) participantes.forEach(p => { if (p.id !== peer.id && !minhasChamadas.has(p.id)) ligarPara(p.id); });
+  minhasChamadas.forEach((call, id) => { if (!ids.has(id)) { call.close(); minhasChamadas.delete(id); } });
+  [...telas.keys()].forEach(id => { if (!ids.has(id)) removerTela(id); });
+}
+
+$('btnCompartilhar').onclick = async () => {
+  if (!podeCompartilhar) return alert('Este navegador não permite compartilhar a tela.');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: true   // áudio da aba/sistema, se o navegador permitir
+    });
+  } catch { return; } // usuário cancelou
+  minhaTela = stream;
+  minhaTela.getVideoTracks()[0].onended = pararCompartilhar; // botão "Parar" do próprio navegador
+  const t = criarTela(peer.id, meuNome, true);
+  t.video.srcObject = minhaTela;
+  tocar(t);
+  $('btnCompartilhar').classList.add('escondido');
+  $('btnParar').classList.remove('escondido');
+  sincronizarChamadas();
+  enviar({ tipo: 'tela', ativo: true });
+};
+
+function pararCompartilhar() {
+  if (!minhaTela) return;
+  minhaTela.getTracks().forEach(t => t.stop());
+  minhaTela = null;
+  minhasChamadas.forEach(c => c.close());
+  minhasChamadas.clear();
+  removerTela(peer.id);
+  $('btnParar').classList.add('escondido');
+  if (podeCompartilhar) $('btnCompartilhar').classList.remove('escondido');
+  enviar({ tipo: 'tela', ativo: false });
+}
+$('btnParar').onclick = pararCompartilhar;
+
+// ================= MENSAGENS =================
+// Toda mensagem passa pelo dono, que repassa para todos.
+function enviar(msg) {
+  if (souDono) tratarNoDono(peer.id, meuNome, msg);
+  else if (connDono?.open) connDono.send(msg);
+}
+
+function receber(msg) {
+  if (msg.tipo === 'chat') addMensagem(msg.nome, msg.texto);
+  else if (msg.tipo === 'sistema') addMensagem('', msg.texto, true);
+  else if (msg.tipo === 'usuarios') { participantes = msg.lista; mostrarUsuarios(); sincronizarChamadas(); }
+  else if (msg.tipo === 'tela') {
+    if (msg.de !== peer.id) addMensagem('', msg.nome + (msg.ativo ? ' começou' : ' parou') + ' a compartilhar a tela.', true);
+    if (!msg.ativo && msg.de !== peer.id) removerTela(msg.de);
+  }
+}
+
+// ================= DONO DA SALA =================
+function distribuir(msg) {
+  conexoes.forEach(c => c.conn.open && c.conn.send(msg));
+  receber(msg);
+}
+
+function atualizarLista() {
+  distribuir({ tipo: 'usuarios', lista: [
+    { id: peer.id, nome: meuNome + ' 👑' },
+    ...[...conexoes].map(([id, c]) => ({ id, nome: c.nome }))
+  ]});
+}
+
+function tratarNoDono(de, nome, msg) {
+  if (msg.tipo === 'chat') distribuir({ tipo: 'chat', nome, texto: String(msg.texto).slice(0, 500) });
+  else if (msg.tipo === 'tela') distribuir({ tipo: 'tela', de, nome, ativo: !!msg.ativo });
+}
+
+$('btnCriar').onclick = () => {
+  meuNome = pegarNome(); if (!meuNome) return;
+  const codigo = Math.random().toString(36).slice(2, 8);
+  peer?.destroy();
+  peer = new Peer(PREFIXO + codigo, OPCOES_PEER);
+  peer.on('open', () => {
+    souDono = true;
+    abrirSala(codigo);
+    atualizarLista();
+    addMensagem('', 'Sala criada! Clique em “Copiar link” e envie para seus amigos.', true);
+  });
+  peer.on('error', e => {
+    if (!souDono) { $('erroEntrada').textContent = 'Erro ao criar sala: ' + e.type; peer.destroy(); }
+    else console.warn('PeerJS:', e.type, e);
+  });
+  peer.on('call', receberChamada);
+  peer.on('connection', conn => {
+    conn.on('open', () => conexoes.set(conn.peer, { conn, nome: String(conn.metadata?.nome || 'Anônimo').slice(0, 20) }));
+    conn.on('data', msg => {
+      const c = conexoes.get(conn.peer);
+      if (!c) return;
+      if (msg.tipo === 'oi') {
+        distribuir({ tipo: 'sistema', texto: c.nome + ' entrou.' });
+        atualizarLista();
+      } else tratarNoDono(conn.peer, c.nome, msg);
+    });
+    conn.on('close', () => {
+      const c = conexoes.get(conn.peer);
+      if (!c) return;
+      conexoes.delete(conn.peer);
+      distribuir({ tipo: 'sistema', texto: c.nome + ' saiu.' });
+      atualizarLista();
+    });
+  });
+};
+
+// ================= CONVIDADO =================
+// Aceita tanto o código ("k3x9ab") quanto o link inteiro colado
+function extrairCodigo(texto) {
+  texto = texto.trim();
+  const m = texto.match(/[?&]sala=([a-z0-9]+)/i);
+  return (m ? m[1] : texto).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+$('btnEntrar').onclick = () => {
+  meuNome = pegarNome(); if (!meuNome) return;
+  const codigo = extrairCodigo($('codigoEntrar').value);
+  if (!codigo) { $('erroEntrada').textContent = 'Digite o código da sala.'; return; }
+  peer?.destroy(); // se for uma nova tentativa, descarta a anterior
+  $('erroEntrada').style.color = 'var(--fraco)';
+  $('erroEntrada').textContent = 'Conectando...';
+  $('btnEntrar').disabled = true;
+  const falhar = texto => {
+    clearTimeout(timer);
+    $('erroEntrada').style.color = '#f88';
+    $('erroEntrada').textContent = texto;
+    $('btnEntrar').disabled = false;
+    peer?.destroy();
+  };
+  let etapa = 'servidor';
+  const timer = setTimeout(() => falhar(etapa === 'servidor'
+    ? 'Não conseguiu falar com o servidor do PeerJS (etapa 1). Verifique a internet, bloqueador de anúncios ou antivírus.'
+    : 'Achou a sala, mas a conexão direta com o dono falhou (etapa 2). Geralmente é rede/firewall bloqueando — ' +
+      'tente com o dono e você na mesma rede Wi-Fi, ou configure um servidor TURN próprio (veja SERVIDORES_ICE no código).'),
+    25000);
+  peer = new Peer(OPCOES_PEER);
+  peer.on('error', e => {
+    if (connDono?.open) return console.warn('PeerJS:', e.type, e); // já está na sala
+    falhar(
+      e.type === 'peer-unavailable' ? 'Sala "' + codigo + '" não encontrada. Confira o código e se o dono ainda está com a página aberta.'
+      : e.type === 'network' || e.type === 'server-error' ? 'Não conseguiu falar com o servidor do PeerJS. Verifique a internet/bloqueadores.'
+      : 'Erro: ' + e.type);
+  });
+  peer.on('call', receberChamada);
+  peer.on('open', () => {
+    etapa = 'p2p';
+    $('erroEntrada').textContent = 'Servidor OK, conectando com o dono da sala...';
+    connDono = peer.connect(PREFIXO + codigo, { metadata: { nome: meuNome }, reliable: true });
+    connDono.on('open', () => { clearTimeout(timer); abrirSala(codigo); connDono.send({ tipo: 'oi' }); });
+    connDono.on('data', receber);
+    connDono.on('close', () => {
+      addMensagem('', 'O dono fechou a sala.', true);
+      pararCompartilhar();
+      participantes = [];
+      [...telas.keys()].forEach(removerTela);
+      mostrarUsuarios();
+    });
+  });
+};
+
+// ================= BOTÕES =================
+$('formChat').onsubmit = e => {
+  e.preventDefault();
+  const texto = $('textoChat').value.trim();
+  if (!texto) return;
+  $('textoChat').value = '';
+  enviar({ tipo: 'chat', texto });
+};
+
+$('btnCopiar').onclick = () => {
+  navigator.clipboard.writeText(location.href);
+  $('btnCopiar').textContent = 'Copiado!';
+  setTimeout(() => $('btnCopiar').textContent = 'Copiar link', 1500);
+};
+$('btnTelaCheia').onclick = () => $('palco').requestFullscreen?.();
+// Sai da sala e volta para a tela inicial (sem o ?sala= no endereço)
+$('btnSair').onclick = () => { pararCompartilhar(); peer?.destroy(); location.href = location.pathname; };
+</script>
+</body>
+</html>
