@@ -146,7 +146,9 @@ const telas = new Map();             // peerId -> quadrinho de vídeo na tela
 let focoAtual = null;
 
 // Abre direto na sala se veio por link (?sala=CODIGO)
-const salaDoLink = new URLSearchParams(location.search).get('sala');
+const parametros = new URLSearchParams(location.search);
+const salaDoLink = (parametros.get('sala') || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const veioDoDiscord = parametros.get('discord') === '1'; // link gerado pelo bot com /tela
 if (salaDoLink) $('codigoEntrar').value = salaDoLink;
 try { $('nome').value = localStorage.getItem('telashare-nome') || ''; } catch {}
 
@@ -535,18 +537,28 @@ function tratarNoDono(de, nome, msg) {
 
 $('btnCriar').onclick = () => {
   meuNome = pegarNome(); if (!meuNome) return;
-  const codigo = Math.random().toString(36).slice(2, 8);
+  criarSala(Math.random().toString(36).slice(2, 8));
+};
+
+// Cria a sala com esse código e vira o dono.
+// seIdOcupado: o que fazer se outra pessoa criou a mesma sala ao mesmo tempo (ex.: entrar nela)
+function criarSala(codigo, seIdOcupado) {
   peer?.destroy();
+  souDono = false;
   peer = new Peer(PREFIXO + codigo, OPCOES_PEER);
   peer.on('open', () => {
     souDono = true;
     abrirSala(codigo);
     atualizarLista();
-    addMensagem('', 'Sala criada! Clique em “Copiar link” e envie para seus amigos.', true);
+    addMensagem('', veioDoDiscord
+      ? 'Sala criada! Você é o dono. Quem clicar no botão do Discord vai entrar aqui.'
+      : 'Sala criada! Clique em “Copiar link” e envie para seus amigos.', true);
   });
   peer.on('error', e => {
-    if (!souDono) { $('erroEntrada').textContent = 'Erro ao criar sala: ' + e.type; peer.destroy(); }
-    else console.warn('PeerJS:', e.type, e);
+    if (souDono) return console.warn('PeerJS:', e.type, e);
+    peer.destroy();
+    if (e.type === 'unavailable-id' && seIdOcupado) return seIdOcupado();
+    $('erroEntrada').textContent = 'Erro ao criar sala: ' + e.type;
   });
   peer.on('call', receberChamada);
   peer.on('connection', conn => {
@@ -568,7 +580,7 @@ $('btnCriar').onclick = () => {
       atualizarLista();
     });
   });
-};
+}
 
 // ================= CONVIDADO =================
 // Aceita tanto o código ("k3x9ab") quanto o link inteiro colado
@@ -582,6 +594,11 @@ $('btnEntrar').onclick = () => {
   meuNome = pegarNome(); if (!meuNome) return;
   const codigo = extrairCodigo($('codigoEntrar').value);
   if (!codigo) { $('erroEntrada').textContent = 'Digite o código da sala.'; return; }
+  // Link do bot do Discord: se a sala ainda não existe, quem chegar primeiro cria
+  entrar(codigo, veioDoDiscord && codigo === salaDoLink);
+};
+
+function entrar(codigo, criarSeNaoExistir) {
   peer?.destroy(); // se for uma nova tentativa, descarta a anterior
   $('erroEntrada').style.color = 'var(--fraco)';
   $('erroEntrada').textContent = 'Conectando...';
@@ -602,6 +619,12 @@ $('btnEntrar').onclick = () => {
   peer = new Peer(OPCOES_PEER);
   peer.on('error', e => {
     if (connDono?.open) return console.warn('PeerJS:', e.type, e); // já está na sala
+    if (e.type === 'peer-unavailable' && criarSeNaoExistir) {
+      clearTimeout(timer);
+      $('btnEntrar').disabled = false;
+      $('erroEntrada').textContent = 'Sala vazia, criando...';
+      return criarSala(codigo, () => entrar(codigo, false)); // se alguém criou junto, entra na dela
+    }
     falhar(
       e.type === 'peer-unavailable' ? 'Sala "' + codigo + '" não encontrada. Confira o código e se o dono ainda está com a página aberta.'
       : e.type === 'network' || e.type === 'server-error' ? 'Não conseguiu falar com o servidor do PeerJS. Verifique a internet/bloqueadores.'
@@ -641,6 +664,12 @@ $('btnCopiar').onclick = () => {
 $('btnTelaCheia').onclick = () => $('palco').requestFullscreen?.();
 // Sai da sala e volta para a tela inicial (sem o ?sala= no endereço)
 $('btnSair').onclick = () => { pararCompartilhar(); peer?.destroy(); location.href = location.pathname; };
+
+// Veio pelo botão do Discord: entra direto se já tiver apelido salvo
+if (veioDoDiscord && salaDoLink) {
+  if ($('nome').value.trim()) $('btnEntrar').click();
+  else { $('nome').focus(); $('erroEntrada').style.color = 'var(--fraco)'; $('erroEntrada').textContent = 'Digite seu apelido e clique em Entrar.'; }
+}
 </script>
 </body>
 </html>
