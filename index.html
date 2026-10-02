@@ -32,7 +32,8 @@
   #palco { flex:1; position:relative; background:#000; min-height:0; overflow:auto; }
   #grade { display:grid; gap:8px; padding:8px; min-height:100%; align-content:center;
            grid-template-columns:repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
-  #grade.focado { height:100%; grid-template-columns:1fr; grid-template-rows:1fr; }
+  #grade.focado, #grade:has(> .tela:only-child) { height:100%; grid-template-columns:1fr; grid-template-rows:1fr; }
+  #grade:has(> .tela:only-child) .tela { aspect-ratio:auto; } /* uma tela só: ocupa o espaço sem rolagem */
   #grade.focado .tela:not(.foco) { display:none; }
   #grade.focado .tela.foco { aspect-ratio:auto; }
   .tela { position:relative; background:#111; border-radius:8px; overflow:hidden; aspect-ratio:16/9; cursor:pointer; }
@@ -331,15 +332,38 @@ function pegarStreamVazio() {
   return streamVazio;
 }
 
-// Pede para a pessoa me mandar a tela dela
-function pedirTela(id) {
+// Em algumas redes só um dos lados consegue iniciar a conexão de vídeo. Por isso há dois caminhos:
+//  - 'pedido': quem assiste liga para quem compartilha pedindo a tela
+//  - 'envio':  quem assiste pede (pelo chat interno) e quem compartilha liga mandando a tela
+// Tenta um; se o vídeo não chegar em 8s, tenta o outro automaticamente.
+const usarEnvio = new Set(); // pessoas com quem o caminho 'envio' funcionou: da próxima vez vai direto por ele
+
+function pedirTela(id, modo, ehSegundaTentativa) {
+  modo = modo || (usarEnvio.has(id) ? 'envio' : 'pedido');
   const t = criarTela(id, nomeDe(id), false);
   if (t.call) { const antiga = t.call; t.call = null; antiga.close(); }
-  const call = peer.call(id, pegarStreamVazio(), { metadata: { pedido: 'tela', nome: meuNome } });
-  if (!call) return;
-  t.call = call;
+  t.modo = modo;
+  t.ehSegundaTentativa = !!ehSegundaTentativa;
   t.mostrarTentar(false);
-  t.estado('Conectando vídeo...');
+  t.estado(ehSegundaTentativa ? 'Tentando por outro caminho...' : 'Conectando vídeo...');
+  if (modo === 'pedido') {
+    const call = peer.call(id, pegarStreamVazio(), { metadata: { pedido: 'tela', nome: meuNome } });
+    if (call) acompanharChamada(id, t, call);
+  } else {
+    enviar({ tipo: 'religar', para: id }); // a pessoa vai me ligar (ver receberChamada)
+    const tentativa = t.tentativa = (t.tentativa || 0) + 1;
+    setTimeout(() => {
+      if (telas.get(id) !== t || t.tentativa !== tentativa || t.call) return; // já ligou ou mudou
+      if (!ehSegundaTentativa) pedirTela(id, 'pedido', true);
+      else { t.estado('A pessoa não respondeu.'); t.mostrarTentar(true); }
+    }, 10000);
+  }
+}
+
+// Liga os eventos de uma chamada de vídeo (de qualquer caminho) ao quadrinho
+function acompanharChamada(id, t, call) {
+  t.call = call;
+  t.tentativa = (t.tentativa || 0) + 1;
   call.on('stream', s => {
     if (t.video.srcObject !== s) { t.video.srcObject = s; tocar(t); }
   });
@@ -349,19 +373,21 @@ function pedirTela(id) {
     else removerTela(id);
   });
   const pc = call.peerConnection;
-  pc?.addEventListener('iceconnectionstatechange', () => {
-    if (pc.iceConnectionState === 'failed') {
-      t.estado('A conexão de vídeo falhou (rede/firewall).');
-      t.mostrarTentar(true);
-    }
-  });
 
-  // Diagnóstico: se o vídeo não começar em 8s, mostra o que está acontecendo
+  // Diagnóstico: se o vídeo não começar em 8s, tenta o outro caminho ou mostra o que está acontecendo
   const inicio = Date.now();
   const diag = setInterval(async () => {
     if (t.call !== call || !telas.has(id)) return clearInterval(diag);
-    if (t.video.readyState >= 2) { t.mostrarTentar(false); return clearInterval(diag); } // vídeo chegou
+    if (t.video.readyState >= 2) { // vídeo chegou: lembra qual caminho funcionou
+      if (t.modo === 'envio') usarEnvio.add(id); else usarEnvio.delete(id);
+      t.mostrarTentar(false);
+      return clearInterval(diag);
+    }
     if (Date.now() - inicio < 8000 || !pc) return;
+    if (!t.ehSegundaTentativa) {
+      clearInterval(diag);
+      return pedirTela(id, t.modo === 'pedido' ? 'envio' : 'pedido', true);
+    }
     let kb = 0, quadros = 0;
     try {
       (await pc.getStats()).forEach(r => {
@@ -370,21 +396,42 @@ function pedirTela(id) {
     } catch {}
     const rede = { new: 'iniciando', checking: 'procurando caminho', connected: 'conectada', completed: 'conectada',
                    disconnected: 'caiu', failed: 'falhou', closed: 'fechada' }[pc.iceConnectionState] || pc.iceConnectionState;
-    t.estado('Ainda carregando... rede: ' + rede + ' · recebido: ' + kb + ' KB · quadros: ' + quadros);
+    t.estado('Não conectou pelos dois caminhos. Rede: ' + rede + ' · recebido: ' + kb + ' KB · quadros: ' + quadros);
     t.mostrarTentar(true);
   }, 2000);
 }
 
-// Botão "Tentar de novo": faz um novo pedido
+// Botão "Tentar de novo": recomeça (com troca automática de caminho)
 function pedirReenvio(id) { pedirTela(id); }
 
-// Chegou uma chamada: é alguém pedindo a minha tela
+// Guarda a chamada que está levando a minha tela para alguém
+function registrarEnvio(id, call) {
+  const antiga = minhasChamadas.get(id);
+  minhasChamadas.set(id, call);
+  if (antiga && antiga !== call) antiga.close();
+  call.on('close', () => { if (minhasChamadas.get(id) === call) minhasChamadas.delete(id); });
+}
+
+// Caminho 'envio': alguém pediu para eu ligar mandando a minha tela
+function enviarTelaPara(id) {
+  if (!minhaTela) return;
+  const call = peer.call(id, minhaTela, { metadata: { envio: 'tela', nome: meuNome } });
+  if (call) registrarEnvio(id, call);
+}
+
+// Chegou uma chamada de vídeo
 function receberChamada(call) {
-  if (call.metadata?.pedido !== 'tela' || !minhaTela) return call.close();
-  minhasChamadas.get(call.peer)?.close();
-  call.answer(minhaTela);
-  minhasChamadas.set(call.peer, call);
-  call.on('close', () => { if (minhasChamadas.get(call.peer) === call) minhasChamadas.delete(call.peer); });
+  const m = call.metadata || {};
+  if (m.pedido === 'tela') {            // caminho 'pedido': alguém quer ver a minha tela
+    if (!minhaTela) return call.close();
+    call.answer(minhaTela);
+    registrarEnvio(call.peer, call);
+  } else if (m.envio === 'tela') {      // caminho 'envio': alguém está me mandando a tela que eu pedi
+    const t = telas.get(call.peer);
+    if (!t || t.modo !== 'envio') return call.close();
+    call.answer();
+    acompanharChamada(call.peer, t, call);
+  } else call.close();
 }
 
 // Mostra no meu quadrinho para quem minha tela está chegando
@@ -458,6 +505,7 @@ function receber(msg) {
     if (msg.de !== peer.id) addMensagem('', msg.nome + (msg.ativo ? ' começou a' : ' parou de') + ' compartilhar a tela.', true);
     if (!msg.ativo && msg.de !== peer.id) removerTela(msg.de);
   }
+  else if (msg.tipo === 'religar' && msg.para === peer.id) enviarTelaPara(msg.de);
 }
 
 // ================= DONO DA SALA =================
@@ -482,6 +530,7 @@ function tratarNoDono(de, nome, msg) {
     distribuir({ tipo: 'tela', de, nome, ativo: !!msg.ativo });
     atualizarLista(); // a lista avisa todo mundo quem está compartilhando
   }
+  else if (msg.tipo === 'religar') distribuir({ tipo: 'religar', de, para: String(msg.para) });
 }
 
 $('btnCriar').onclick = () => {
