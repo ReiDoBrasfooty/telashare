@@ -205,7 +205,7 @@ function mostrarUsuarios() {
   $('usuarios').innerHTML = '';
   participantes.forEach(p => {
     const li = document.createElement('li');
-    li.textContent = (telas.has(p.id) ? '🖥️ ' : '🟢 ') + p.nome + (p.id === peer.id ? ' (você)' : '');
+    li.textContent = (p.tela ? '🖥️ ' : '🟢 ') + p.nome + (p.id === peer.id ? ' (você)' : '');
     $('usuarios').append(li);
   });
 }
@@ -313,17 +313,41 @@ function atualizarAviso() {
   if (peer) mostrarUsuarios();
 }
 
-// Alguém começou a me mandar a tela dele
-function receberChamada(call) {
-  call.answer();
-  const t = criarTela(call.peer, call.metadata?.nome || nomeDe(call.peer), false);
-  if (t.call && t.call !== call) t.call.close();
+// ================= VER A TELA DOS OUTROS =================
+// Quem ASSISTE é quem inicia a conexão de vídeo ("me manda sua tela"), e quem compartilha só responde.
+// Assim funciona mesmo em redes onde só um dos lados consegue iniciar conexões.
+
+function estaCompartilhando(id) { return !!participantes.find(p => p.id === id)?.tela; }
+
+// Stream "vazio" (sem imagem nem som de verdade), só para abrir os canais de áudio e vídeo no pedido
+let streamVazio = null;
+function pegarStreamVazio() {
+  if (streamVazio) return streamVazio;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 16;
+  canvas.getContext('2d').fillRect(0, 0, 16, 16);
+  streamVazio = canvas.captureStream(0); // 0 = não envia quadros
+  try { streamVazio.addTrack(new AudioContext().createMediaStreamDestination().stream.getAudioTracks()[0]); } catch {}
+  return streamVazio;
+}
+
+// Pede para a pessoa me mandar a tela dela
+function pedirTela(id) {
+  const t = criarTela(id, nomeDe(id), false);
+  if (t.call) { const antiga = t.call; t.call = null; antiga.close(); }
+  const call = peer.call(id, pegarStreamVazio(), { metadata: { pedido: 'tela', nome: meuNome } });
+  if (!call) return;
   t.call = call;
+  t.mostrarTentar(false);
   t.estado('Conectando vídeo...');
   call.on('stream', s => {
     if (t.video.srcObject !== s) { t.video.srcObject = s; tocar(t); }
   });
-  call.on('close', () => { if (t.call === call) removerTela(call.peer); });
+  call.on('close', () => {
+    if (t.call !== call) return;
+    if (estaCompartilhando(id)) { t.estado('A conexão de vídeo caiu.'); t.mostrarTentar(true); }
+    else removerTela(id);
+  });
   const pc = call.peerConnection;
   pc?.addEventListener('iceconnectionstatechange', () => {
     if (pc.iceConnectionState === 'failed') {
@@ -335,7 +359,7 @@ function receberChamada(call) {
   // Diagnóstico: se o vídeo não começar em 8s, mostra o que está acontecendo
   const inicio = Date.now();
   const diag = setInterval(async () => {
-    if (t.call !== call || !telas.has(call.peer)) return clearInterval(diag);
+    if (t.call !== call || !telas.has(id)) return clearInterval(diag);
     if (t.video.readyState >= 2) { t.mostrarTentar(false); return clearInterval(diag); } // vídeo chegou
     if (Date.now() - inicio < 8000 || !pc) return;
     let kb = 0, quadros = 0;
@@ -351,11 +375,16 @@ function receberChamada(call) {
   }, 2000);
 }
 
-// Pede para quem está compartilhando mandar a tela de novo só para mim
-function pedirReenvio(id) {
-  const t = telas.get(id);
-  if (t) { t.estado('Pedindo para reenviar...'); t.mostrarTentar(false); }
-  enviar({ tipo: 'religar', para: id });
+// Botão "Tentar de novo": faz um novo pedido
+function pedirReenvio(id) { pedirTela(id); }
+
+// Chegou uma chamada: é alguém pedindo a minha tela
+function receberChamada(call) {
+  if (call.metadata?.pedido !== 'tela' || !minhaTela) return call.close();
+  minhasChamadas.get(call.peer)?.close();
+  call.answer(minhaTela);
+  minhasChamadas.set(call.peer, call);
+  call.on('close', () => { if (minhasChamadas.get(call.peer) === call) minhasChamadas.delete(call.peer); });
 }
 
 // Mostra no meu quadrinho para quem minha tela está chegando
@@ -369,23 +398,15 @@ function atualizarEnvio() {
   t.rotulo.textContent = 'Você' + (partes.length ? ' — enviando para: ' + partes.join(', ') : ' — ninguém assistindo ainda');
 }
 
-// ================= COMPARTILHAR MINHA TELA =================
-function ligarPara(id) {
-  if (!minhaTela) return;
-  minhasChamadas.get(id)?.close();
-  const call = peer.call(id, minhaTela, { metadata: { nome: meuNome } });
-  if (!call) return;
-  minhasChamadas.set(id, call);
-  call.on('close', () => { if (minhasChamadas.get(id) === call) minhasChamadas.delete(id); });
-}
-
-// Liga para quem entrou e desliga de quem saiu
+// Pede a tela de quem começou a compartilhar, fecha a de quem parou e desliga de quem saiu
 function sincronizarChamadas() {
   const ids = new Set(participantes.map(p => p.id));
-  if (minhaTela) participantes.forEach(p => { if (p.id !== peer.id && !minhasChamadas.has(p.id)) ligarPara(p.id); });
+  participantes.forEach(p => { if (p.tela && p.id !== peer.id && !telas.has(p.id)) pedirTela(p.id); });
+  [...telas.keys()].forEach(id => { if (id !== peer.id && !estaCompartilhando(id)) removerTela(id); });
   minhasChamadas.forEach((call, id) => { if (!ids.has(id)) { call.close(); minhasChamadas.delete(id); } });
-  [...telas.keys()].forEach(id => { if (!ids.has(id)) removerTela(id); });
 }
+
+// ================= COMPARTILHAR MINHA TELA =================
 
 $('btnCompartilhar').onclick = async () => {
   if (!podeCompartilhar) return alert('Este navegador não permite compartilhar a tela.');
@@ -405,8 +426,7 @@ $('btnCompartilhar').onclick = async () => {
   monitorEnvio = setInterval(atualizarEnvio, 2000);
   $('btnCompartilhar').classList.add('escondido');
   $('btnParar').classList.remove('escondido');
-  sincronizarChamadas();
-  enviar({ tipo: 'tela', ativo: true });
+  enviar({ tipo: 'tela', ativo: true }); // os outros vão pedir minha tela quando souberem
 };
 
 function pararCompartilhar() {
@@ -435,10 +455,9 @@ function receber(msg) {
   else if (msg.tipo === 'sistema') addMensagem('', msg.texto, true);
   else if (msg.tipo === 'usuarios') { participantes = msg.lista; mostrarUsuarios(); sincronizarChamadas(); }
   else if (msg.tipo === 'tela') {
-    if (msg.de !== peer.id) addMensagem('', msg.nome + (msg.ativo ? ' começou' : ' parou') + ' a compartilhar a tela.', true);
+    if (msg.de !== peer.id) addMensagem('', msg.nome + (msg.ativo ? ' começou a' : ' parou de') + ' compartilhar a tela.', true);
     if (!msg.ativo && msg.de !== peer.id) removerTela(msg.de);
   }
-  else if (msg.tipo === 'religar' && msg.para === peer.id && minhaTela) ligarPara(msg.de);
 }
 
 // ================= DONO DA SALA =================
@@ -449,15 +468,20 @@ function distribuir(msg) {
 
 function atualizarLista() {
   distribuir({ tipo: 'usuarios', lista: [
-    { id: peer.id, nome: meuNome + ' 👑' },
-    ...[...conexoes].map(([id, c]) => ({ id, nome: c.nome }))
+    { id: peer.id, nome: meuNome + ' 👑', tela: quemCompartilha.has(peer.id) },
+    ...[...conexoes].map(([id, c]) => ({ id, nome: c.nome, tela: quemCompartilha.has(id) }))
   ]});
 }
 
+const quemCompartilha = new Set(); // dono: ids de quem está compartilhando agora
+
 function tratarNoDono(de, nome, msg) {
   if (msg.tipo === 'chat') distribuir({ tipo: 'chat', nome, texto: String(msg.texto).slice(0, 500) });
-  else if (msg.tipo === 'tela') distribuir({ tipo: 'tela', de, nome, ativo: !!msg.ativo });
-  else if (msg.tipo === 'religar') distribuir({ tipo: 'religar', de, para: String(msg.para) });
+  else if (msg.tipo === 'tela') {
+    if (msg.ativo) quemCompartilha.add(de); else quemCompartilha.delete(de);
+    distribuir({ tipo: 'tela', de, nome, ativo: !!msg.ativo });
+    atualizarLista(); // a lista avisa todo mundo quem está compartilhando
+  }
 }
 
 $('btnCriar').onclick = () => {
@@ -490,6 +514,7 @@ $('btnCriar').onclick = () => {
       const c = conexoes.get(conn.peer);
       if (!c) return;
       conexoes.delete(conn.peer);
+      quemCompartilha.delete(conn.peer);
       distribuir({ tipo: 'sistema', texto: c.nome + ' saiu.' });
       atualizarLista();
     });
